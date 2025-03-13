@@ -1,80 +1,61 @@
-import express from "express";
-import cors from "cors";
-import {
-  AgentKit,
-  CdpWalletProvider,
-  wethActionProvider,
-  walletActionProvider,
-  erc20ActionProvider,
-  cdpApiActionProvider,
-  cdpWalletActionProvider,
-  pythActionProvider,
-} from "@coinbase/agentkit";
-import { getLangChainTools } from "@coinbase/agentkit-langchain";
-import { HumanMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
-import { createReactAgent } from "@langchain/langgraph/prebuilt";
-import { ChatOpenAI } from "@langchain/openai";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import { logger } from "./utils/logger";
-import { json } from "stream/consumers";
-
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.app = void 0;
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const agentkit_1 = require("@coinbase/agentkit");
+const agentkit_langchain_1 = require("@coinbase/agentkit-langchain");
+const messages_1 = require("@langchain/core/messages");
+const langgraph_1 = require("@langchain/langgraph");
+const prebuilt_1 = require("@langchain/langgraph/prebuilt");
+const openai_1 = require("@langchain/openai");
+const dotenv_1 = __importDefault(require("dotenv"));
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const logger_1 = require("./utils/logger");
 // Load environment variables
-dotenv.config();
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
-
+dotenv_1.default.config();
+const app = (0, express_1.default)();
+exports.app = app;
+app.use((0, cors_1.default)());
+app.use(express_1.default.json());
+app.use(express_1.default.static(path_1.default.join(__dirname, "public")));
 //-------------------------------------------------------
 // Specialized Prompts: Read from env variables or default
 //-------------------------------------------------------
-const PROMPT_REQUIREMENTS =
-  process.env.REQUIREMENTS_PROMPT ||
-  `
+const PROMPT_REQUIREMENTS = process.env.REQUIREMENTS_PROMPT ||
+    `
 The user wants to discuss new requirements. Provide helpful detail about how to gather requirements,
 security considerations, and objectives. Also list some clarifying questions.
 `.trim();
-
-const PROMPT_RESEARCH =
-  process.env.RESEARCH_PROMPT ||
-  `
+const PROMPT_RESEARCH = process.env.RESEARCH_PROMPT ||
+    `
 The user wants to research or analyze something. Provide thorough background research,
 competitor analysis, or relevant data.
 `.trim();
-
-const PROMPT_DEVELOPMENT =
-  process.env.DEVELOPMENT_PROMPT ||
-  `
+const PROMPT_DEVELOPMENT = process.env.DEVELOPMENT_PROMPT ||
+    `
 The user wants to discuss development. Provide guidance on best practices, tools, and frameworks.
 `.trim();
-
-const PROMPT_AUDIT =
-  process.env.AUDIT_PROMPT ||
-  `
+const PROMPT_AUDIT = process.env.AUDIT_PROMPT ||
+    `
 The user wants to discuss auditing. Provide guidance on security audits, code reviews, and testing.
 `.trim();
-
-const PROMPT_DEPLOYMENT =
-  process.env.DEPLOYMENT_PROMPT ||
-  `
+const PROMPT_DEPLOYMENT = process.env.DEPLOYMENT_PROMPT ||
+    `
 The user wants to discuss deployment. Provide guidance on deployment strategies, hosting, and scaling.
 `.trim();
-
-const PROMPT_GENERAL =
-  process.env.GENERAL_PROMPT ||
-  `
+const PROMPT_GENERAL = process.env.GENERAL_PROMPT ||
+    `
 The user has a general question. Provide a helpful response.
 `.trim();
-
 //-------------------------------------------------------
 // Base instructions for how to format each mode's output
 //-------------------------------------------------------
-const BASE_INSTRUCTIONS =
-  process.env.BASE_INSTRUCTIONS_PROMPT || `
+const BASE_INSTRUCTIONS = process.env.BASE_INSTRUCTIONS_PROMPT || `
 You are Titan AI, an agent that responds in one of these modes:
 [requirements, research, development, audit, deployment, general].
 
@@ -273,324 +254,261 @@ Instructions:
 - Do not output any additional text outside the JSON.
 - make sure to output in json format with the required keys. and the output should be a valid json object.
 `.trim();
-
-//-------------------------------------------------------
-// In-memory session store & queue
-//-------------------------------------------------------
-interface AgentSession {
-  agent: ReturnType<typeof createReactAgent>;
-  agentConfig: Record<string, any>;
-  lastActive: number; // Timestamp of last user activity
-  inactivityTimer: NodeJS.Timeout; // Timer handle to clean up if inactive
-}
-
-const SESSIONS: Record<string, AgentSession> = {};
+const SESSIONS = {};
 const MAX_ACTIVE_SESSIONS = 20;
 const SESSION_INACTIVITY_MS = 10 * 60 * 1000; // 10 minutes
-const QUEUE: Array<{ chatId: string }> = [];
-
+const QUEUE = [];
 //-------------------------------------------------------
 // Wallet data location
 //-------------------------------------------------------
-const WALLET_DATA_FILE = path.join(__dirname, "wallet_data.txt");
-
+const WALLET_DATA_FILE = path_1.default.join(__dirname, "wallet_data.txt");
 /***************************************************
  * Validate environment variables
  ***************************************************/
-function validateEnvironment(): void {
-  const missingVars: string[] = [];
-  // Check required variables
-  const requiredVars = [
-    "OPENAI_API_KEY",
-    "CDP_API_KEY_NAME",
-    "CDP_API_KEY_PRIVATE_KEY",
-  ];
-  requiredVars.forEach((varName) => {
-    if (!process.env[varName]) {
-      missingVars.push(varName);
-    }
-  });
-
-  // Exit if any required variables are missing
-  if (missingVars.length > 0) {
-    console.error("Error: Required environment variables are not set");
-    missingVars.forEach((varName) => {
-      console.error(`${varName}=your_${varName.toLowerCase()}_here`);
+function validateEnvironment() {
+    const missingVars = [];
+    // Check required variables
+    const requiredVars = [
+        "OPENAI_API_KEY",
+        "CDP_API_KEY_NAME",
+        "CDP_API_KEY_PRIVATE_KEY",
+    ];
+    requiredVars.forEach((varName) => {
+        if (!process.env[varName]) {
+            missingVars.push(varName);
+        }
     });
-    process.exit(1);
-  }
-
-  // Warn about optional NETWORK_ID
-  if (!process.env.NETWORK_ID) {
-    console.warn("Warning: NETWORK_ID not set, defaulting to Sonic Blaze Testnet");
-  }
+    // Exit if any required variables are missing
+    if (missingVars.length > 0) {
+        console.error("Error: Required environment variables are not set");
+        missingVars.forEach((varName) => {
+            console.error(`${varName}=your_${varName.toLowerCase()}_here`);
+        });
+        process.exit(1);
+    }
+    // Warn about optional NETWORK_ID
+    if (!process.env.NETWORK_ID) {
+        console.warn("Warning: NETWORK_ID not set, defaulting to Sonic Blaze Testnet");
+    }
 }
-
 /***************************************************
  * Create a brand-new agent for a chat session
  ***************************************************/
-async function createNewAgent( model = "gpt-4o-mini"): Promise<{
-  agent: ReturnType<typeof createReactAgent>;
-  agentConfig: Record<string, any>;
-}> {
-  // 1) Validate environment (safe to call multiple times)
-  validateEnvironment();
-
-  // 2) Initialize the LLM
-  const llm = new ChatOpenAI({
-    model: model,
-    temperature: 0.7,
-  });
-
-  // 3) Read any existing wallet data (if present)
-  let walletDataStr: string | undefined = undefined;
-  if (fs.existsSync(WALLET_DATA_FILE)) {
-    try {
-      walletDataStr = fs.readFileSync(WALLET_DATA_FILE, "utf8");
-    } catch (err) {
-      console.error("Error reading existing wallet file:", err);
+async function createNewAgent(model = "gpt-4o-mini") {
+    // 1) Validate environment (safe to call multiple times)
+    validateEnvironment();
+    // 2) Initialize the LLM
+    const llm = new openai_1.ChatOpenAI({
+        model: model,
+        temperature: 0.7,
+    });
+    // 3) Read any existing wallet data (if present)
+    let walletDataStr = undefined;
+    if (fs_1.default.existsSync(WALLET_DATA_FILE)) {
+        try {
+            walletDataStr = fs_1.default.readFileSync(WALLET_DATA_FILE, "utf8");
+        }
+        catch (err) {
+            console.error("Error reading existing wallet file:", err);
+        }
     }
-  }
-
-  // 4) Configure CDP Wallet Provider
-  const config = {
-    apiKeyName: process.env.CDP_API_KEY_NAME,
-    apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-    cdpWalletData: walletDataStr || undefined,
-    networkId: process.env.NETWORK_ID || "Sonic Blaze Testnet",
-  };
-
-  // 5) Construct wallet provider
-  const walletProvider = await CdpWalletProvider.configureWithWallet(config);
-
-  // 6) Initialize AgentKit
-  const agentkit = await AgentKit.from({
-    walletProvider,
-    actionProviders: [
-      wethActionProvider(),
-      pythActionProvider(),
-      walletActionProvider(),
-      erc20ActionProvider(),
-      cdpApiActionProvider({
+    // 4) Configure CDP Wallet Provider
+    const config = {
         apiKeyName: process.env.CDP_API_KEY_NAME,
         apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-      }),
-      cdpWalletActionProvider({
-        apiKeyName: process.env.CDP_API_KEY_NAME,
-        apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-      }),
-    ],
-  });
-
-  // 7) Turn AgentKit providers into LangChain “tools”
-  const tools = await getLangChainTools(agentkit);
-
-  // 8) Memory for storing conversation threads
-  const memory = new MemorySaver();
-  const agentConfig = {
-    configurable: {
-      thread_id: "Titan Agent ",
-    },
-  };
-
-  // 9) Create a ReAct Agent
-  const agent = createReactAgent({
-    llm,
-    tools,
-    checkpointSaver: memory,
-    // Insert the base instructions at the start
-    messageModifier: `${BASE_INSTRUCTIONS}\n\nYou are a helpful agent that can interact onchain using the Coinbase Developer Platform (CDP) AgentKit.
+        cdpWalletData: walletDataStr || undefined,
+        networkId: process.env.NETWORK_ID || "Sonic Blaze Testnet",
+    };
+    // 5) Construct wallet provider
+    const walletProvider = await agentkit_1.CdpWalletProvider.configureWithWallet(config);
+    // 6) Initialize AgentKit
+    const agentkit = await agentkit_1.AgentKit.from({
+        walletProvider,
+        actionProviders: [
+            (0, agentkit_1.wethActionProvider)(),
+            (0, agentkit_1.pythActionProvider)(),
+            (0, agentkit_1.walletActionProvider)(),
+            (0, agentkit_1.erc20ActionProvider)(),
+            (0, agentkit_1.cdpApiActionProvider)({
+                apiKeyName: process.env.CDP_API_KEY_NAME,
+                apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+            }),
+            (0, agentkit_1.cdpWalletActionProvider)({
+                apiKeyName: process.env.CDP_API_KEY_NAME,
+                apiKeyPrivateKey: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+            }),
+        ],
+    });
+    // 7) Turn AgentKit providers into LangChain “tools”
+    const tools = await (0, agentkit_langchain_1.getLangChainTools)(agentkit);
+    // 8) Memory for storing conversation threads
+    const memory = new langgraph_1.MemorySaver();
+    const agentConfig = {
+        configurable: {
+            thread_id: "Titan Agent ",
+        },
+    };
+    // 9) Create a ReAct Agent
+    const agent = (0, prebuilt_1.createReactAgent)({
+        llm,
+        tools,
+        checkpointSaver: memory,
+        // Insert the base instructions at the start
+        messageModifier: `${BASE_INSTRUCTIONS}\n\nYou are a helpful agent that can interact onchain using the Coinbase Developer Platform (CDP) AgentKit.
 If you ever need funds, you can request them from a faucet if on 'Sonic Blaze Testnet'.
 If you cannot do something with the current tools, politely explain that it is not supported.
 `,
-  });
-
-  // 10) Export wallet data so we can persist it
-  const exportedWallet = await walletProvider.exportWallet();
-  fs.writeFileSync(WALLET_DATA_FILE, JSON.stringify(exportedWallet));
-
-  return { agent, agentConfig };
+    });
+    // 10) Export wallet data so we can persist it
+    const exportedWallet = await walletProvider.exportWallet();
+    fs_1.default.writeFileSync(WALLET_DATA_FILE, JSON.stringify(exportedWallet));
+    return { agent, agentConfig };
 }
-
 /***************************************************
  * Clean up a session if inactive
  ***************************************************/
-async function cleanupSession(chatId: string) {
-  if (SESSIONS[chatId]) {
-    console.log(
-      `Session [${chatId}] inactive for ${
-        SESSION_INACTIVITY_MS / 1000 / 60
-      } minutes. Cleaning up.`
-    );
-    delete SESSIONS[chatId];
-
-    // Process next queued session if any
-    if (QUEUE.length > 0) {
-      const nextSession = QUEUE.shift();
-      if (nextSession) {
-        try {
-          // Create new agent for queued session
-          const { agent, agentConfig } = await createNewAgent();
-
-          const inactivityTimer = setTimeout(() => {
-            cleanupSession(nextSession.chatId);
-          }, SESSION_INACTIVITY_MS);
-
-          SESSIONS[nextSession.chatId] = {
-            agent,
-            agentConfig,
-            lastActive: Date.now(),
-            inactivityTimer,
-          };
-
-          console.log(
-            `Processed queued session [${nextSession.chatId}]. Queue length: ${QUEUE.length}`
-          );
-        } catch (error) {
-          console.error(
-            `Failed to process queued session [${nextSession.chatId}]:`,
-            error
-          );
-          // Put it back in queue if failed
-          QUEUE.unshift(nextSession);
+async function cleanupSession(chatId) {
+    if (SESSIONS[chatId]) {
+        console.log(`Session [${chatId}] inactive for ${SESSION_INACTIVITY_MS / 1000 / 60} minutes. Cleaning up.`);
+        delete SESSIONS[chatId];
+        // Process next queued session if any
+        if (QUEUE.length > 0) {
+            const nextSession = QUEUE.shift();
+            if (nextSession) {
+                try {
+                    // Create new agent for queued session
+                    const { agent, agentConfig } = await createNewAgent();
+                    const inactivityTimer = setTimeout(() => {
+                        cleanupSession(nextSession.chatId);
+                    }, SESSION_INACTIVITY_MS);
+                    SESSIONS[nextSession.chatId] = {
+                        agent,
+                        agentConfig,
+                        lastActive: Date.now(),
+                        inactivityTimer,
+                    };
+                    console.log(`Processed queued session [${nextSession.chatId}]. Queue length: ${QUEUE.length}`);
+                }
+                catch (error) {
+                    console.error(`Failed to process queued session [${nextSession.chatId}]:`, error);
+                    // Put it back in queue if failed
+                    QUEUE.unshift(nextSession);
+                }
+            }
         }
-      }
     }
-  }
 }
-
 /***************************************************
  * Reset the inactivity timer for a session
  ***************************************************/
-function resetInactivityTimer(chatId: string) {
-  const session = SESSIONS[chatId];
-  if (!session) return;
-
-  clearTimeout(session.inactivityTimer);
-
-  session.inactivityTimer = setTimeout(() => {
-    cleanupSession(chatId);
-  }, SESSION_INACTIVITY_MS);
-
-  session.lastActive = Date.now();
+function resetInactivityTimer(chatId) {
+    const session = SESSIONS[chatId];
+    if (!session)
+        return;
+    clearTimeout(session.inactivityTimer);
+    session.inactivityTimer = setTimeout(() => {
+        cleanupSession(chatId);
+    }, SESSION_INACTIVITY_MS);
+    session.lastActive = Date.now();
 }
-
 /***************************************************
  * Endpoint: Start a new chat session
  ***************************************************/
 app.post("/api/start-chat", async (req, res) => {
-  try {
-    const { chatId } = req.body;
-    if (!chatId) {
-      return res.status(400).json({ error: "Missing 'chatId' in request body." });
+    try {
+        const { chatId } = req.body;
+        if (!chatId) {
+            return res.status(400).json({ error: "Missing 'chatId' in request body." });
+        }
+        if (SESSIONS[chatId]) {
+            return res.status(400).json({ error: "That chatId is already in use." });
+        }
+        const activeCount = Object.keys(SESSIONS).length;
+        if (activeCount >= MAX_ACTIVE_SESSIONS) {
+            console.log(`Active sessions = ${activeCount}, pushing chat [${chatId}] to queue.`);
+            QUEUE.push({ chatId });
+            return res.json({
+                message: `Queue is full (${MAX_ACTIVE_SESSIONS}). Your request has been queued.`,
+            });
+        }
+        const { agent, agentConfig } = await createNewAgent();
+        const inactivityTimer = setTimeout(() => {
+            cleanupSession(chatId);
+        }, SESSION_INACTIVITY_MS);
+        SESSIONS[chatId] = {
+            agent,
+            agentConfig,
+            lastActive: Date.now(),
+            inactivityTimer,
+        };
+        logger_1.logger.log({
+            chatId,
+            sender: "SYSTEM",
+            message: "New chat session started",
+            status: "SUCCESS",
+        });
+        console.log(`Created new session [${chatId}]. Active sessions: ${Object.keys(SESSIONS).length}`);
+        return res.json({ message: `Session [${chatId}] created successfully!` });
     }
-
-    if (SESSIONS[chatId]) {
-      return res.status(400).json({ error: "That chatId is already in use." });
+    catch (error) {
+        logger_1.logger.log({
+            chatId: req.body.chatId || "UNKNOWN",
+            sender: "SYSTEM",
+            message: `Error: ${error}`,
+            status: "ERROR",
+        });
+        console.error("Error in /api/start-chat:", error);
+        return res.status(500).json({ error: String(error) });
     }
-
-    const activeCount = Object.keys(SESSIONS).length;
-    if (activeCount >= MAX_ACTIVE_SESSIONS) {
-      console.log(`Active sessions = ${activeCount}, pushing chat [${chatId}] to queue.`);
-      QUEUE.push({ chatId });
-      return res.json({
-        message: `Queue is full (${MAX_ACTIVE_SESSIONS}). Your request has been queued.`,
-      });
-    }
-
-    const { agent, agentConfig } = await createNewAgent();
-
-    const inactivityTimer = setTimeout(() => {
-      cleanupSession(chatId);
-    }, SESSION_INACTIVITY_MS);
-
-    SESSIONS[chatId] = {
-      agent,
-      agentConfig,
-      lastActive: Date.now(),
-      inactivityTimer,
-    };
-
-    logger.log({
-      chatId,
-      sender: "SYSTEM",
-      message: "New chat session started",
-      status: "SUCCESS",
-    });
-
-    console.log(
-      `Created new session [${chatId}]. Active sessions: ${Object.keys(SESSIONS).length}`
-    );
-
-    return res.json({ message: `Session [${chatId}] created successfully!` });
-  } catch (error) {
-    logger.log({
-      chatId: req.body.chatId || "UNKNOWN",
-      sender: "SYSTEM",
-      message: `Error: ${error}`,
-      status: "ERROR",
-    });
-    console.error("Error in /api/start-chat:", error);
-    return res.status(500).json({ error: String(error) });
-  }
 });
-
 /***************************************************
  * Endpoint: Send a chat message to an existing session
  ***************************************************/
 app.post("/api/chat", async (req, res) => {
-  try {
-    const { chatId, userMessage } = req.body;
-    if (!chatId) {
-      return res.status(400).json({ error: "Missing 'chatId' in request body." });
-    }
-    if (!userMessage) {
-      return res.status(400).json({ error: "Missing 'userMessage' in request body." });
-    }
-
-    const trimmedUserMessage = userMessage.slice(0, 5000);
-
-    logger.log({
-      chatId,
-      sender: "USER",
-      message: userMessage,
-    });
-
-    let session = SESSIONS[chatId];
-    if (!session) {
-      const activeCount = Object.keys(SESSIONS).length;
-      if (activeCount >= MAX_ACTIVE_SESSIONS) {
-        console.log(`Active sessions = ${activeCount}, pushing chat [${chatId}] to queue.`);
-        QUEUE.push({ chatId });
-        return res.json({
-          message: `Queue is full (${MAX_ACTIVE_SESSIONS}). Your request has been queued.`,
+    try {
+        const { chatId, userMessage } = req.body;
+        if (!chatId) {
+            return res.status(400).json({ error: "Missing 'chatId' in request body." });
+        }
+        if (!userMessage) {
+            return res.status(400).json({ error: "Missing 'userMessage' in request body." });
+        }
+        const trimmedUserMessage = userMessage.slice(0, 5000);
+        logger_1.logger.log({
+            chatId,
+            sender: "USER",
+            message: userMessage,
         });
-      }
-
-      const { agent, agentConfig } = await createNewAgent();
-      const inactivityTimer = setTimeout(() => {
-        cleanupSession(chatId);
-      }, SESSION_INACTIVITY_MS);
-
-      SESSIONS[chatId] = {
-        agent,
-        agentConfig,
-        lastActive: Date.now(),
-        inactivityTimer,
-      };
-      session = SESSIONS[chatId];
-
-      logger.log({
-        chatId,
-        sender: "SYSTEM",
-        message: "Created new chat session automatically for /api/chat request",
-        status: "SUCCESS",
-      });
-    }
-
-    resetInactivityTimer(chatId);
-
-    let specializedPrompt = `
+        let session = SESSIONS[chatId];
+        if (!session) {
+            const activeCount = Object.keys(SESSIONS).length;
+            if (activeCount >= MAX_ACTIVE_SESSIONS) {
+                console.log(`Active sessions = ${activeCount}, pushing chat [${chatId}] to queue.`);
+                QUEUE.push({ chatId });
+                return res.json({
+                    message: `Queue is full (${MAX_ACTIVE_SESSIONS}). Your request has been queued.`,
+                });
+            }
+            const { agent, agentConfig } = await createNewAgent();
+            const inactivityTimer = setTimeout(() => {
+                cleanupSession(chatId);
+            }, SESSION_INACTIVITY_MS);
+            SESSIONS[chatId] = {
+                agent,
+                agentConfig,
+                lastActive: Date.now(),
+                inactivityTimer,
+            };
+            session = SESSIONS[chatId];
+            logger_1.logger.log({
+                chatId,
+                sender: "SYSTEM",
+                message: "Created new chat session automatically for /api/chat request",
+                status: "SUCCESS",
+            });
+        }
+        resetInactivityTimer(chatId);
+        let specializedPrompt = `
       ${BASE_INSTRUCTIONS}
 
       You will read the user's message and first determine which of the following modes best applies:
@@ -600,128 +518,109 @@ app.post("/api/chat", async (req, res) => {
 
       User message: "${trimmedUserMessage}"
     `;
-
-    const agentStream = await session.agent.stream(
-      { messages: [new HumanMessage(specializedPrompt)] },
-      session.agentConfig
-    );
-
-    let aggregatedResponse = "";
-
-    for await (const chunk of agentStream) {
-      if ("agent" in chunk) {
-        const content = chunk.agent.messages[0].content;
-        const usage = chunk.agent.messages[0]?.response_metadata?.tokenUsage;
-
-        aggregatedResponse += content;
-
-        if (usage) {
-          logger.log({
+        const agentStream = await session.agent.stream({ messages: [new messages_1.HumanMessage(specializedPrompt)] }, session.agentConfig);
+        let aggregatedResponse = "";
+        for await (const chunk of agentStream) {
+            if ("agent" in chunk) {
+                const content = chunk.agent.messages[0].content;
+                const usage = chunk.agent.messages[0]?.response_metadata?.tokenUsage;
+                aggregatedResponse += content;
+                if (usage) {
+                    logger_1.logger.log({
+                        chatId,
+                        sender: "AI",
+                        message: `Token Usage: prompt=${usage.promptTokens}, completion=${usage.completionTokens}, total=${usage.totalTokens}`,
+                        tokenUsage: usage,
+                    });
+                }
+            }
+            else if ("tools" in chunk) {
+                aggregatedResponse += `(TOOL-LOG) ${chunk.tools.messages[0].content}`;
+            }
+        }
+        let parsedJson;
+        try {
+            // Attempt to parse the ```json inside response string
+            // if ```json is present, remove just first and last line as there might be more json in between
+            const jsonValue = aggregatedResponse.startsWith("```json")
+                ? aggregatedResponse.split("\n").slice(1, -1).join("\n")
+                : aggregatedResponse;
+            parsedJson = JSON.parse(jsonValue.trim());
+        }
+        catch (parseError) {
+            logger_1.logger.log({
+                chatId,
+                sender: "SYSTEM",
+                message: "Failed to parse agent response as JSON. Returning fallback.\n\nResponse:\n" + aggregatedResponse,
+                status: "ERROR",
+            });
+            parsedJson = {
+                mode: "GENERAL",
+                message: aggregatedResponse,
+                general_message: "The system could not parse or generate the correct JSON structure.",
+            };
+        }
+        if (!parsedJson.mode || !parsedJson.message) {
+            logger_1.logger.log({
+                chatId,
+                sender: "SYSTEM",
+                message: "Agent response missing required keys. Returning fallback.",
+                status: "ERROR",
+            });
+            parsedJson = {
+                mode: "GENERAL",
+                message: "An error occurred while processing your request.",
+                general_message: "The system returned incomplete JSON (missing 'mode' or 'message').",
+            };
+        }
+        parsedJson.metadata = {
+            timestamp: new Date().toISOString(),
+            sessionId: chatId,
+            model: "gpt-4o-mini",
+        };
+        logger_1.logger.log({
             chatId,
             sender: "AI",
-            message: `Token Usage: prompt=${usage.promptTokens}, completion=${usage.completionTokens}, total=${usage.totalTokens}`,
-            tokenUsage: usage,
-          });
-        }
-      } else if ("tools" in chunk) {
-        aggregatedResponse += `(TOOL-LOG) ${chunk.tools.messages[0].content}`;
-      }
+            message: "Returning final JSON response to user.",
+            mode: parsedJson.mode,
+            status: "COMPLETE",
+        });
+        return res.json(parsedJson);
     }
-
-    let parsedJson: any;
-    try {
-      // Attempt to parse the ```json inside response string
-      // if ```json is present, remove just first and last line as there might be more json in between
-      const jsonValue = aggregatedResponse.startsWith("```json")
-        ? aggregatedResponse.split("\n").slice(1, -1).join("\n")
-        : aggregatedResponse;
-      parsedJson = JSON.parse(jsonValue.trim());
-    } catch (parseError) {
-      logger.log({
-        chatId,
-        sender: "SYSTEM",
-        message: "Failed to parse agent response as JSON. Returning fallback.\n\nResponse:\n" + aggregatedResponse,
-        status: "ERROR",
-      });
-      parsedJson = {
-        mode: "GENERAL",
-        message: aggregatedResponse,
-        general_message:
-          "The system could not parse or generate the correct JSON structure.",
-      };
+    catch (err) {
+        logger_1.logger.log({
+            chatId: req.body.chatId || "UNKNOWN",
+            sender: "SYSTEM",
+            message: `Error: ${err}`,
+            status: "ERROR",
+        });
+        console.error("Error in /api/chat:", err);
+        return res.status(500).json({
+            mode: "GENERAL",
+            message: "An error occurred while processing your request.",
+            general_message: String(err),
+        });
     }
-
-    if (!parsedJson.mode || !parsedJson.message) {
-      logger.log({
-        chatId,
-        sender: "SYSTEM",
-        message: "Agent response missing required keys. Returning fallback.",
-        status: "ERROR",
-      });
-      parsedJson = {
-        mode: "GENERAL",
-        message: "An error occurred while processing your request.",
-        general_message:
-          "The system returned incomplete JSON (missing 'mode' or 'message').",
-      };
-    }
-
-    parsedJson.metadata = {
-      timestamp: new Date().toISOString(),
-      sessionId: chatId,
-      model: "gpt-4o-mini",
-    };
-
-    logger.log({
-      chatId,
-      sender: "AI",
-      message: "Returning final JSON response to user.",
-      mode: parsedJson.mode,
-      status: "COMPLETE",
-    });
-
-    return res.json(parsedJson);
-  } catch (err) {
-    logger.log({
-      chatId: req.body.chatId || "UNKNOWN",
-      sender: "SYSTEM",
-      message: `Error: ${err}`,
-      status: "ERROR",
-    });
-    console.error("Error in /api/chat:", err);
-
-    return res.status(500).json({
-      mode: "GENERAL",
-      message: "An error occurred while processing your request.",
-      general_message: String(err),
-    });
-  }
 });
-
 /***************************************************
  * Endpoint: Manual check if any queued requests
  ***************************************************/
 app.get("/api/queue-status", (req, res) => {
-  res.json({ queued: QUEUE });
+    res.json({ queued: QUEUE });
 });
-
 /***************************************************
  * Endpoint: Manual check if any active sessions
  ***************************************************/
 app.get("/api/session-status", (req, res) => {
-  res.json({ activeSessions: Object.keys(SESSIONS) });
+    res.json({ activeSessions: Object.keys(SESSIONS) });
 });
-
 /***************************************************
  * Endpoint: Show the server is running (Health Check)
  ***************************************************/
 app.get("/", (req, res) => {
-  res.send("Server is running.");
+    res.send("Server is running.");
 });
-
 // Add before the root endpoint handler
 app.get("/test", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "test.html"));
+    res.sendFile(path_1.default.join(__dirname, "public", "test.html"));
 });
-
-export { app };
