@@ -93,14 +93,14 @@ Titan AI Smart Contract Assist is built using a modern technology stack:
    
 4. **Run the Development Server:**
    ```bash
-   npm install
+   npm install --force
    npm run build
    npm start
    ```
 5. **Access the Application:**
   ```bash
    cd TitanAI/frontend
-   npm install
+   npm install --force
    npm run dev
    ```
 
