@@ -66,6 +66,12 @@ Titan AI Smart Contract Assist is built using a modern technology stack:
 
 ## 📥 Installation & Setup
 
+### Prerequisites
+
+- [Node.js 23.0.3+](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)
+- [Git](https://git-scm.com/downloads)
+  
+
 1. **Clone the Repository:**
    ```bash
    git clone https://github.com/Web3masters/TitanAI.git
